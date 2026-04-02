@@ -1,0 +1,10 @@
+token.json
+credentials.json
+material/
+*.zip
+*.ai
+*.pdf
+__pycache__/
+# 🌟 新增：過濾掉所有的測試素材資料夾
+material/
+*.zip
