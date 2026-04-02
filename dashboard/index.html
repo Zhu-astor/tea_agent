@@ -1,0 +1,36 @@
+<script>
+    // 加上時間戳記，確保每次抓的都是最新版 log.json
+    const logUrl = 'log.json?v=' + Date.now();
+
+    fetch(logUrl)
+        .then(res => {
+            if (!res.ok) throw new Error("找不到 log.json，請確認檔案已推送到 GitHub");
+            return res.json();
+        })
+        .then(data => {
+            console.log("成功讀取資料：", data); // 按 F12 可以在這裡看到資料
+            const table = document.getElementById('logTable');
+            
+            if (data.length === 0) {
+                table.innerHTML = '<tr><td colspan="5" class="text-center">目前尚無處理紀錄</td></tr>';
+                return;
+            }
+
+            table.innerHTML = data.map(log => `
+                <tr>
+                    <td><img src="${log.thumbnail}" width="100" class="img-thumbnail" onerror="this.src='https://placehold.co/100x100?text=No+Image'"></td>
+                    <td class="small text-muted">${log.original_name}</td>
+                    <td class="fw-bold text-primary">${log.final_name}</td>
+                    <td>
+                        <span class="badge bg-info text-dark">${log.activity}</span><br>
+                        <span class="badge bg-success">${log.purpose}</span>
+                    </td>
+                    <td><code class="text-dark">${log.size}</code></td>
+                </tr>
+            `).join('');
+        })
+        .catch(err => {
+            console.error(err);
+            document.getElementById('logTable').innerHTML = `<tr><td colspan="5" class="text-danger text-center">載入失敗: ${err.message}</td></tr>`;
+        });
+</script>
