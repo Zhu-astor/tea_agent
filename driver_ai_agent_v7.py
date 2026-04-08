@@ -33,7 +33,7 @@ LARGE_FILE_THRESHOLD_MB = 25
 POLLING_INTERVAL_SECONDS = 30 
 
 PURPOSE_LIST = [
-    "1a(機器人)", "banner(機器人)", "六宮格選單(機器人)", "名片小卡", "店面", 
+    "1a(機器人)", "banner(機器人)", "六宮格選單(機器人)", "名片小卡","名片dm小卡","dm小卡", "店面", 
     "社群平台", "公告", "立架", "布條", "酷卡", "貼紙", "桌面大圖/柱子", 
     "網站", "包裝/禮盒", "兌換券/折價券", "茶包", "dm菜單", "三折"
 ]
@@ -99,7 +99,11 @@ def map_purpose_name(original_name, ai_purpose):
 def get_essential_meta(service, file_id, original_name):
     """提取年份、設備，並判斷是否為重複上傳(更新)"""
     # 獲取檔案在雲端的詳細資訊 (version 代表修改次數)
-    file_info = service.files().get(fileId=file_id, fields='version, modifiedTime').execute()
+    file_info = service.files().get(
+        fileId=file_id, 
+        fields='version, modifiedTime',
+        supportsAllDrives=True 
+    ).execute()
     version = int(file_info.get('version', 1))
     
     meta = {
@@ -174,7 +178,7 @@ def create_drive_shortcut(service, target_id, target_name):
             'shortcutDetails': {'targetId': target_id},
             'parents': [MANUAL_REVIEW_FOLDER_ID]
         }
-        service.files().create(body=shortcut_metadata).execute()
+        service.files().create(body=shortcut_metadata, supportsAllDrives=True).execute()
         print(f"🔗 已在人工確認夾建立捷徑")
     except Exception as e:
         print(f"⚠️ 建立捷徑失敗: {e}")
@@ -197,31 +201,53 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_or_create_year_folder(service, parent_id, year):
-    """自動建立年份子資料夾"""
+    """自動建立年份子資料夾 (支援共用硬碟版)"""
     query = f"name = '{year}' and '{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    folders = service.files().list(q=query).execute().get('files', [])
+    
+    # 這裡也要加上支援開關
+    folders = service.files().list(
+        q=query, 
+        supportsAllDrives=True, 
+        includeItemsFromAllDrives=True
+    ).execute().get('files', [])
+    
     if folders: return folders[0]['id']
+    
     folder_meta = {'name': year, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
-    return service.files().create(body=folder_meta, fields='id').execute().get('id')
-
+    
+    # 建立時也要加上 supportsAllDrives
+    return service.files().create(
+        body=folder_meta, 
+        fields='id', 
+        supportsAllDrives=True 
+    ).execute().get('id')
+    
 def archive_and_rename(service, file_id, new_name, year):
     """【整合歸檔】重新命名 + 移至年份資料夾"""
     try:
         target_folder_id = get_or_create_year_folder(service, PROCESSED_ROOT_ID, year)
-        file = service.files().get(fileId=file_id, fields='parents').execute()
+        file = service.files().get(
+            fileId=file_id, 
+            fields='parents',
+            supportsAllDrives=True 
+        ).execute()
         prev_parents = ",".join(file.get('parents'))
         service.files().update(
             fileId=file_id,
             body={'name': new_name},
             addParents=target_folder_id,
-            removeParents=prev_parents
+            removeParents=prev_parents,
+            supportsAllDrives=True 
         ).execute()
         return True
     except Exception as e:
         print(f"❌ 歸檔失敗: {e}"); return False
 
 def download_drive_file(service, file_id, file_name):
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(
+        fileId=file_id,
+        supportsAllDrives=True 
+    )
     fh = io.FileIO(file_name, 'wb')
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -305,7 +331,7 @@ def process_file(service, file_item):
         if final_purpose == "不確定":
             for rule_size, rule_purpose in SIZE_RULE_MAP.items():
                 clean_rule = rule_size.upper().replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
-                if clean_rule == phys["clean_size"]:
+                if clean_rule == phys.get("clean_size"):
                     final_purpose = rule_purpose
                     print(f"⚖️ 【尺寸規則介入】: 鎖定為 {final_purpose}")
                     break
@@ -357,6 +383,9 @@ def process_file(service, file_item):
 
     except Exception as e:
         print(f"❌ 處理失敗: {e}")
+        # 🌟 修正：發生錯誤時，也要把檔案移走，否則會無限循環
+        archive_and_rename(service, f_id, f"[錯誤發生]_{orig_name}", "手動處理") 
+        create_drive_shortcut(service, f_id, f"ERROR_{orig_name}")
     finally:
         if local_path and os.path.exists(local_path): os.remove(local_path)
         if is_temp_pdf: cleanup_temp_file(target_file)
@@ -399,23 +428,32 @@ def sync_to_github():
     except Exception as e:
         print(f"⚠️ Git 同步失敗: {e}")
         
+# --- 找到 main() 裡面的這段並替換 ---
 def main():
     service = get_drive_service()
     print(f"🚀 Tea Agent V6 (捷徑與版本追蹤版) 啟動...")
     while True:
         try:
-            # 加上 version, modifiedTime 欄位
+            # 加上 supportsAllDrives 與 includeItemsFromAllDrives
             query = f"'{INBOX_FOLDER_ID}' in parents and trashed = false"
             fields = "files(id, name, mimeType, version, modifiedTime)"
-            items = service.files().list(q=query, fields=fields).execute().get('files', [])
+            
+            items = service.files().list(
+                q=query, 
+                fields=fields,
+                supportsAllDrives=True,         # 🌟 關鍵：支援共用雲端硬碟
+                includeItemsFromAllDrives=True  # 🌟 關鍵：包含共用雲端硬碟的項目
+            ).execute().get('files', [])
             
             if items:
                 for f in items:
                     if f['mimeType'] == 'application/vnd.google-apps.folder': continue
                     process_file(service, f)
             else:
+                # 沒檔案時會印點點
                 print(".", end="", flush=True)
-            time.sleep(30)
+            
+            time.sleep(POLLING_INTERVAL_SECONDS) # 建議用變數，你設 30 秒
         except Exception as e:
             print(f"⚠️ 監聽中斷: {e}")
             time.sleep(60)
