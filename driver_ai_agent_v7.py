@@ -140,12 +140,23 @@ def analyze_physical_size(file_path, original_name):
     
     # A. 檔名優先 (修正：支援抓取 C 或 B 開頭的尺寸)
     # [CB]? 代表可選的 C 或 B；\d+ 代表數字
-    size_match = re.search(r'([CB]?\d+[xX]\d+(?:cm|mm|px)?)', original_name, re.IGNORECASE)
+    regex = r'(([CB]?\d+[xX]\d+)|([CB]\d+))(?:mm|cm|px)?'
+    match = re.search(regex, original_name, re.IGNORECASE)
     
-    if size_match:
-        info["size"] = size_match.group(1).upper()
-        # 這裡直接生成 clean_size 供後續比對
-        info["clean_size"] = info["size"].replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
+    if match:
+        raw_size = match.group(1).upper() # 取得匹配到的部分，如 C055 或 54X180
+        
+        # 🌟 自動擴展邏輯：如果抓到的是 C055 或 B060 這種縮寫
+        if re.match(r'^[CB]\d+$', raw_size):
+            prefix = raw_size[0]      # 'C' 或 'B'
+            num = raw_size[1:]        # '055'
+            standardized_size = f"{prefix}{num}X{num}MM" # 變成 C055X055MM
+        else:
+            # 如果已經有 X 了，就補上 MM 單位方便比對
+            standardized_size = raw_size if "MM" in raw_size else raw_size + "MM"
+
+        info["size"] = standardized_size
+        info["clean_size"] = standardized_size.replace(" ", "")
         return info
 
     # B. PDF 偵測 (MediaBox)
@@ -175,7 +186,7 @@ def analyze_physical_size(file_path, original_name):
         except: pass
     
     # 移除 PX, CM, MM 與空格，轉大寫
-    clean_size = info["size"].upper().replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
+    clean_size = info["size"].upper().replace(" ", "")
     info["clean_size"] = clean_size
     return info
 def create_drive_shortcut(service, target_id, target_name):
@@ -328,31 +339,30 @@ def process_file(service, file_item):
 
         # 2. 尺寸偵測
         phys = analyze_physical_size(target_file, orig_name)
-        
-        # 🌟 優先判斷：如果尺寸在物理清單中，直接鎖定 Purpose
+        # 🌟 統一轉大寫去空格來比對
+        current_size = phys.get("clean_size", "").upper().replace(" ", "")
+
+        # 2. 硬性規則攔截
         fixed_purpose = None
-        current_clean_size = phys.get("clean_size", "")
-        
+        # 這裡用一個小迴圈來確保 "C055X055" 也能對到 "C055X055MM"
         for rule_size, rule_purpose in SIZE_RULE_MAP.items():
-            clean_rule = rule_size.upper().replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
-            if clean_rule == current_clean_size:
+            if rule_size.upper().replace(" ", "") == current_size:
                 fixed_purpose = rule_purpose
-                print(f"⚖️ 【硬性規則命中】: 偵測到特定尺寸 {current_clean_size}，直接鎖定為 {fixed_purpose}")
+                print(f"⚖️ 【硬性規則命中】: 尺寸 {current_size} 自動判定為 {fixed_purpose}")
                 break
 
-        # 3. AI 盲測 (如果已經有 fixed_purpose，可以叫 AI 只要判斷「活動」就好，或者維持原狀但結果被 override)
+        # 3. AI 視覺描述 (即便命中硬性規則，AI 還是可以幫忙判斷「活動名稱」)
         b64_imgs = get_images_for_ai(target_file)
-        ai_res = ask_vision_ai_blind(b64_imgs, phys["size"], f"HIDE_{int(time.time())}")
+        ai_res = ask_vision_ai_blind(b64_imgs, phys["size"], "HIDDEN")
 
-        # 4. --- 最終決策邏輯 ---
+        # 4. 決策
         final_activity = map_activity_name(orig_name, ai_res.get('活動判定'))
         
-        # 如果前面命中了硬性規則，就用硬性規則；否則走原本的 map_purpose 邏輯
+        # 如果硬性規則有抓到，優先使用；否則才用 map_purpose_name (含 AI 判定)
         if fixed_purpose:
             final_purpose = fixed_purpose
         else:
             final_purpose = map_purpose_name(orig_name, ai_res.get('用途判定'))
-
         # 5. 組合最終名稱
         base_name = f"{meta['year']}_{final_activity}_{phys['size']}_{final_purpose}_{meta['device']}"
         if meta["is_update"]:
