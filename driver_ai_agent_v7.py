@@ -138,21 +138,27 @@ def analyze_physical_size(file_path, original_name):
     info = {"size": "不確定", "is_narrow": False}
     ext = os.path.splitext(file_path)[1].lower()
     
-    # A. 檔名優先 (修正：支援抓取 C 或 B 開頭的尺寸)
-    # [CB]? 代表可選的 C 或 B；\d+ 代表數字
+    # 🌟 新增：A0. 常見紙張尺寸優先攔截
+    # 只要檔名有出現這些字，直接定案尺寸！
+    standard_paper_sizes = ["A3", "A4", "A5", "B4", "B5"]
+    for paper in standard_paper_sizes:
+        # 使用正則表達式確保不是抓到像是 "a456" 裡面的 "a4"
+        if re.search(rf'\b{paper}\b', original_name, re.IGNORECASE):
+            info["size"] = paper
+            info["clean_size"] = paper
+            return info
+
+    # A. 檔名優先 (抓取數字 x 數字 或 C055 格式)
     regex = r'(([CB]?\d+[xX]\d+)|([CB]\d+))(?:mm|cm|px)?'
     match = re.search(regex, original_name, re.IGNORECASE)
     
     if match:
-        raw_size = match.group(1).upper() # 取得匹配到的部分，如 C055 或 54X180
-        
-        # 🌟 自動擴展邏輯：如果抓到的是 C055 或 B060 這種縮寫
+        raw_size = match.group(1).upper() 
         if re.match(r'^[CB]\d+$', raw_size):
-            prefix = raw_size[0]      # 'C' 或 'B'
-            num = raw_size[1:]        # '055'
-            standardized_size = f"{prefix}{num}X{num}MM" # 變成 C055X055MM
+            prefix = raw_size[0]      
+            num = raw_size[1:]        
+            standardized_size = f"{prefix}{num}X{num}MM" 
         else:
-            # 如果已經有 X 了，就補上 MM 單位方便比對
             standardized_size = raw_size if "MM" in raw_size else raw_size + "MM"
 
         info["size"] = standardized_size
@@ -358,11 +364,22 @@ def process_file(service, file_item):
         # 4. 決策
         final_activity = map_activity_name(orig_name, ai_res.get('活動判定'))
         
-        # 如果硬性規則有抓到，優先使用；否則才用 map_purpose_name (含 AI 判定)
-        if fixed_purpose:
+        # 🟢 修正：嚴格執行「檔名用途優先」原則 🟢
+        # 步驟 A：只拿「原始檔名」去掃 PURPOSE_LIST，不混入 AI 的干擾
+        name_only_purpose = map_purpose_name(orig_name, "")
+        
+        if name_only_purpose != "不確定":
+            # 檔名有明寫用途 (例如：店面、公告)，直接定案！
+            final_purpose = name_only_purpose
+            
+        elif fixed_purpose:
+            # 檔名沒寫用途，但尺寸對應表有規定 (例如：A4 -> dm菜單)
             final_purpose = fixed_purpose
+            
         else:
+            # 檔名沒寫，尺寸也沒規定，最後才相信 AI 的判斷
             final_purpose = map_purpose_name(orig_name, ai_res.get('用途判定'))
+            
         # 5. 組合最終名稱
         base_name = f"{meta['year']}_{final_activity}_{phys['size']}_{final_purpose}_{meta['device']}"
         if meta["is_update"]:
