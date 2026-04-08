@@ -142,8 +142,8 @@ def analyze_physical_size(file_path, original_name):
     # 只要檔名有出現這些字，直接定案尺寸！
     standard_paper_sizes = ["A3", "A4", "A5", "B4", "B5"]
     for paper in standard_paper_sizes:
-        # 使用正則表達式確保不是抓到像是 "a456" 裡面的 "a4"
-        if re.search(rf'\b{paper}\b', original_name, re.IGNORECASE):
+        # 🟢 修正：使用 (?:^|[_ \-\.]) 來取代 \b，這樣才能正確切分出被底線包圍的 _a4_
+        if re.search(rf'(?:^|[_ \-\.]){paper}(?:[_ \-\.]|$)', original_name, re.IGNORECASE):
             info["size"] = paper
             info["clean_size"] = paper
             return info
