@@ -45,6 +45,11 @@ SIZE_RULE_MAP = {
     "2500X1686PX": "六宮格選單(機器人)",
     "1080X1350PX": "社群平台",
     "1080X1920PX": "社群平台",
+    "C045X045MM": "貼紙",
+    "C050X050MM": "貼紙",
+    "C055X055MM": "貼紙",
+    "C060X060MM": "貼紙",
+    "B060X060MM": "貼紙",
     "54X180MM": "名片小卡",
     "108X180MM": "酷卡",
     "A4": "dm菜單"
@@ -133,10 +138,14 @@ def analyze_physical_size(file_path, original_name):
     info = {"size": "不確定", "is_narrow": False}
     ext = os.path.splitext(file_path)[1].lower()
     
-    # A. 檔名優先
-    size_match = re.search(r'(\d+[xX]\d+(?:cm|mm|px)?)', original_name)
+    # A. 檔名優先 (修正：支援抓取 C 或 B 開頭的尺寸)
+    # [CB]? 代表可選的 C 或 B；\d+ 代表數字
+    size_match = re.search(r'([CB]?\d+[xX]\d+(?:cm|mm|px)?)', original_name, re.IGNORECASE)
+    
     if size_match:
         info["size"] = size_match.group(1).upper()
+        # 這裡直接生成 clean_size 供後續比對
+        info["clean_size"] = info["size"].replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
         return info
 
     # B. PDF 偵測 (MediaBox)
@@ -317,24 +326,32 @@ def process_file(service, file_item):
             target_file = convert_ai_to_pdf(local_path)
             is_temp_pdf = True
 
-        # 2. 尺寸偵測與歸一化
+        # 2. 尺寸偵測
         phys = analyze_physical_size(target_file, orig_name)
         
-        # 3. AI 盲測 (取得視覺描述與初步判定)
+        # 🌟 優先判斷：如果尺寸在物理清單中，直接鎖定 Purpose
+        fixed_purpose = None
+        current_clean_size = phys.get("clean_size", "")
+        
+        for rule_size, rule_purpose in SIZE_RULE_MAP.items():
+            clean_rule = rule_size.upper().replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
+            if clean_rule == current_clean_size:
+                fixed_purpose = rule_purpose
+                print(f"⚖️ 【硬性規則命中】: 偵測到特定尺寸 {current_clean_size}，直接鎖定為 {fixed_purpose}")
+                break
+
+        # 3. AI 盲測 (如果已經有 fixed_purpose，可以叫 AI 只要判斷「活動」就好，或者維持原狀但結果被 override)
         b64_imgs = get_images_for_ai(target_file)
         ai_res = ask_vision_ai_blind(b64_imgs, phys["size"], f"HIDE_{int(time.time())}")
 
         # 4. --- 最終決策邏輯 ---
         final_activity = map_activity_name(orig_name, ai_res.get('活動判定'))
-        final_purpose = map_purpose_name(orig_name, ai_res.get('用途判定'))
         
-        if final_purpose == "不確定":
-            for rule_size, rule_purpose in SIZE_RULE_MAP.items():
-                clean_rule = rule_size.upper().replace("PX", "").replace("CM", "").replace("MM", "").replace(" ", "")
-                if clean_rule == phys.get("clean_size"):
-                    final_purpose = rule_purpose
-                    print(f"⚖️ 【尺寸規則介入】: 鎖定為 {final_purpose}")
-                    break
+        # 如果前面命中了硬性規則，就用硬性規則；否則走原本的 map_purpose 邏輯
+        if fixed_purpose:
+            final_purpose = fixed_purpose
+        else:
+            final_purpose = map_purpose_name(orig_name, ai_res.get('用途判定'))
 
         # 5. 組合最終名稱
         base_name = f"{meta['year']}_{final_activity}_{phys['size']}_{final_purpose}_{meta['device']}"
