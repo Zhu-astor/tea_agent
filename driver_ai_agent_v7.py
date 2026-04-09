@@ -102,38 +102,53 @@ def map_purpose_name(original_name, ai_purpose):
 # ==========================================
 
 def get_essential_meta(service, file_id, original_name):
-    """提取年份、設備，並判斷是否為重複上傳(更新)"""
-    # 獲取檔案在雲端的詳細資訊 (version 代表修改次數)
+    """提取年份、設備，並在「改名前」鎖定真實的上次修改日期"""
+    
+    # 🟢 1. 向 Google 請求檔案資訊，明確要求回傳 modifiedTime
+    # 因為這是在流程最一開始執行的，所以拿到的絕對是改名前的「原始修改時間」
     file_info = service.files().get(
         fileId=file_id, 
-        fields='version, modifiedTime',
+        fields='version, modifiedTime', 
         supportsAllDrives=True 
     ).execute()
+    
     version = int(file_info.get('version', 1))
     
     meta = {
         "year": "無年份", 
         "device": "電腦", 
-        "is_update": version > 1, # 版本大於 1 代表被修改過或重複上傳
+        "is_update": version > 1, # 版本大於 1 代表被覆蓋更新過
         "modify_date": ""
     }
 
-    # 如果是更新，則獲取當前日期
-    if meta["is_update"]:
+    # 🟢 2. 解析截取真實的「上次修改日期」(如圖中的 2026年3月31日)
+    modified_time_str = file_info.get('modifiedTime') 
+    if modified_time_str:
+        try:
+            # API 回傳格式為 '2026-03-31T10:30:00.000Z'
+            # 擷取前面 10 個字元 (2026-03-31) 去掉橫線，變成 20260331
+            dt = datetime.strptime(modified_time_str[:10], "%Y-%m-%d")
+            meta["modify_date"] = dt.strftime("%Y%m%d")
+        except Exception as e:
+            print(f"⚠️ 時間轉換失敗: {e}")
+            meta["modify_date"] = datetime.now().strftime("%Y%m%d") 
+    else:
+        # 如果真的抓不到(極少見)，才用今天的日期保底
         meta["modify_date"] = datetime.now().strftime("%Y%m%d")
 
-    # 檢查年份
+    # 檢查年份 (檔名優先)
     year_match = re.search(r'(20\d{2})', original_name)
     if year_match: 
         meta["year"] = year_match.group(1)
     
-    # 檢查設備
+    # 檢查設備 (檔名優先)
     for d in ["電腦", "iPad", "手機", "DJI", "iPhone"]:
         if d in original_name: 
             meta["device"] = d
             break
             
     return meta
+
 def analyze_physical_size(file_path, original_name):
     info = {"size": "不確定", "is_narrow": False}
     ext = os.path.splitext(file_path)[1].lower()
