@@ -1,3 +1,10 @@
+# Keep only dashboard files in Git
+*
+!.gitignore
+!dashboard/
+!dashboard/**
+
+# Local secrets and generated files (still ignored locally)
 token.json
 credentials.json
 material/
@@ -5,6 +12,7 @@ material/
 *.ai
 *.pdf
 __pycache__/
-# 🌟 新增：過濾掉所有的測試素材資料夾
+# 🌟 過濾掉所有的測試素材資料夾
 material/
+video_process/
 *.zip
